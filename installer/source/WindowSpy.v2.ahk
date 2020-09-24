@@ -206,7 +206,8 @@ class MainWindow {
         )
         if (curCtrl) {
             ctrlTxt := ControlGetText(curCtrl)
-            cText := "ClassNN:`t" curCtrl "`nText:`t" textMangle(ctrlTxt)
+            ctrlClassNN := ControlGetClassNN(curCtrl)
+            cText := "ClassNN:`t" ctrlCLassNN "`nText:`t" textMangle(ctrlTxt)
             ControlGetPos cX, cY, cW, cH, curCtrl
             cText .= "`n`tx: " cX "`ty: " cY "`tw: " cW "`th: " cH
             WinToClient(curWin, cX, cY)
