@@ -7,9 +7,6 @@
 SetWorkingDir A_ScriptDir
 ; SetBatchLines -1
 CoordMode "Pixel", "Screen"
-; Ignore error, sometimes WinExist() will issue window not found error
-; Comment this out when debug
-; OnError((*) => true)
 
 WinGetTextFast(detect_hidden) {
     ; WinGetText ALWAYS uses the "fast" mode - TitleMatchMode only affects
@@ -17,8 +14,8 @@ WinGetTextFast(detect_hidden) {
     ; to retrieve the text of each control.
     try {
         controls := WinGetControlsHwnd()
-    } catch TargetError {
-        return ""
+    } catch TargetError as e {
+        return "Get controls fail: " e.Message
     }
     static WINDOW_TEXT_SIZE := 32767 ; Defined in AutoHotkey source.
     buf := Buffer(WINDOW_TEXT_SIZE * 2) ; *2 for Unicode
@@ -68,7 +65,6 @@ textMangle(text) {
 }
 
 class MainWindow {
-    updateClosure := ""
     textCache := Map()
     autoUpdateEnabled := false
 
@@ -91,6 +87,7 @@ class MainWindow {
     }
 
     OnResize(window, minMax, width, height) {
+        ; Stop auto update when minimize
         if (minMax == -1) {
             this.autoUpdate(false)
         } else {
@@ -142,8 +139,7 @@ class MainWindow {
         this.gui.OnEvent("size", ObjBindMethod(this, "OnResize"))
         this.gui.OnEvent("close", ObjBindMethod(this, "OnClose"))
 
-        ; Create updateClosure for timer
-        this.updateClosure := () => this.update()
+        this.OnUpdate := ObjBindMethod(this, "update")
     }
 
     setText(controlID, text) {
@@ -196,7 +192,7 @@ class MainWindow {
                 "`nahk_pid " WinGetPID()
             )
         } catch TargetError as e {
-            this.setText("Title", "Get window info fail: " e)
+            this.setText("Title", "Get window info fail: " e.Message)
         }
         CoordMode "Mouse", "Window"
         MouseGetPos &mrX, &mrY
@@ -215,7 +211,6 @@ class MainWindow {
             "CtrlLabel", 
             (this.gui["GetCursor"].value ? this.textList["MouseCtrl"] : this.textList["FocusCtrl"]) ":"
         )
-        cText := ""
         if (curCtrl) {
             try {
                 cText := "Class:`t" WinGetClass(curCtrl) "`n"
@@ -228,7 +223,7 @@ class MainWindow {
                 cText .= "`nClient:`tX: " cX "`tY: " cY "`tW: " cW "`tH: " cH
                 this.setText("Ctrl", cText)
             } catch TargetError as e {
-                this.setText("Get control info fail: " e)
+                this.setText("Ctrl", "Get control info fail: " e.Message)
             }
         }
         try {
@@ -243,7 +238,7 @@ class MainWindow {
                 "`nClient:`tX: " wcX "`tY: " wcY "`tW: " wcW "`tH: " wcH
             )
         } catch TargetError as e {
-            this.setText("Get window position fail" e)
+            this.setText("Pos", "Get window position fail" e.Message)
         }
         sbTxt := ""
         loop {
@@ -273,9 +268,9 @@ class MainWindow {
             return
         }
         if (enable) {
-            SetTimer(this.updateClosure, 100)
+            SetTimer(this.OnUpdate, 100)
         } else {
-            SetTimer(this.updateClosure, 0)
+            SetTimer(this.OnUpdate, 0)
             this.statusBar.setText(this.textList["Frozen"])
         }
         this.autoUpdateEnabled := enable
