@@ -8,12 +8,12 @@ SetWorkingDir A_ScriptDir
 ; SetBatchLines -1
 CoordMode "Pixel", "Screen"
 
-WinGetTextFast(detect_hidden) {
+WinGetTextFast(window, detect_hidden) {
     ; WinGetText ALWAYS uses the "fast" mode - TitleMatchMode only affects
     ; WinText/ExcludeText parameters.  In Slow mode, GetWindowText() is used
     ; to retrieve the text of each control.
     try {
-        controls := WinGetControlsHwnd()
+        controls := WinGetControlsHwnd(window)
     } catch TargetError as e {
         return "Get controls fail: " e.Message
     }
@@ -33,7 +33,7 @@ WinGetTextFast(detect_hidden) {
 
 ScreenToClientPos(hWnd, &x, &y) {
     try {
-        WinGetPos(&wX, &wY,,, "ahk_id " hWnd)
+        WinGetPos(&wX, &wY,,, hWnd)
     } catch TargetError {
         return false
     }
@@ -64,7 +64,109 @@ textMangle(text) {
     return text
 }
 
+GetMouseInfo() {
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&msX, &msY)
+    CoordMode "Mouse", "Window"
+    MouseGetPos(&mrX, &mrY)
+    CoordMode "Mouse", "Client"
+    MouseGetPos(&mcX, &mcY)
+    return (
+        "Screen:`t" msX ", " msY "`n"
+        "Window:`t" mrX ", " mrY "`n"
+        "Client:`t" mcX ", " mcY "`n"
+        "Color:`t#" SubStr(PixelGetColor(msX, msY), 3)
+    )
+}
+
+GetWindowInfo(window) {
+    try {
+        return (
+            WinGetTitle(window) "`n"
+            "ahk_class " WinGetClass(window)  "`n"
+            "ahk_exe " WinGetProcessName(window)  "`n"
+            "ahk_pid " WinGetPID(window)
+        )
+    } catch TargetError as e {
+        return "Get window info fail: " e.Message
+    }
+}
+
+GetWindowPosInfo(window) {
+    try {
+        WinGetPos(&wX, &wY, &wW, &wH, window)
+        WinGetClientPos(&wcX, &wcY, &wcW, &wcH, window)
+        return (
+            "`tX: " wX 
+            "`tY: " wY 
+            "`tW: " wW 
+            "`tH: " wH 
+            "`nClient:`tX: " wcX "`tY: " wcY "`tW: " wcW "`tH: " wcH
+        )
+    } catch TargetError as e {
+        return "Get window position fail: " e.Message
+    }
+}
+
+GetStatusBarText(window) {
+    text := ""
+    loop {
+        try {
+            text .= "[" A_Index "]`t" textMangle(StatusBarGetText(A_Index, window)) "`n"
+        } catch as e {
+            break
+        }
+    }
+    return SubStr(text, 1, -1)
+}
+
+GetControlInfo(window, control) {
+    try {
+        ControlGetPos(&screenX, &screenY, &screenWidth, &screenHeight, control)
+        clientX := screenX
+        clientY := screenY
+        ScreenToClientPos(window, &clientX, &clientY)
+        WinGetClientPos(,, &clientWidth, &clientHeight, ControlGetHwnd(control))
+        return (
+            "ClassNN:`t" ControlGetClassNN(control) "`n"
+            "Text:`t" textMangle(ControlGetText(control)) "`n"
+            "Screen:`tX: " screenX "`tY: " screenY "`tW: " screenWidth "`tH: " screenHeight "`n"
+            "Client:`tX: " clientX "`tY: " clientY "`tW: " clientWidth "`tH: " clientHeight
+        )
+    } catch TargetError as e {
+        return "Get control info fail: " e.Message
+    }
+}
+
+GetVisibleText(window, slowMode) {
+    if slowMode {
+        try {
+            DetectHiddenText(False)
+            return WinGetText(window)
+        } catch TargetError as e {
+            return "Get visible text fail: " e.Message
+        }
+    } else {
+        return WinGetTextFast(window, false)
+    }
+}
+
+GetAllText(window, slowMode) {
+    if slowMode {
+        try {
+            DetectHiddenText(True)
+            return WinGetText(window)
+        } catch TargetError as e {
+            return "Get text fail: " e.Message
+        }
+    } else {
+        return WinGetTextFast(window, true)
+    }
+}
+
 class MainWindow {
+    window := 0
+    control := 0
     textCache := Map()
     autoUpdateEnabled := false
 
@@ -75,14 +177,21 @@ class MainWindow {
         "FocusCtrl", "Focused Control",
     )
 
-    onOptionUpdateChange(*) {
+    OnOptionUpdateChange(*) {
         this.updateAutoUpdateTimer()
     }
 
-    onOptionAlwaysOnTopChanged(checkbox, *) {
+    OnOptionAlwaysOnTopChanged(checkbox, *) {
         this.gui.opt(
             (checkbox.value ? "+" : "-")
             "AlwaysOnTop"
+        )
+    }
+
+    OnOptionTargetChange(*) {
+        this.SetText(
+            "CtrlLabel", 
+            this.textList[this.gui["GetCursor"].value ? "MouseCtrl" : "FocusCtrl"] ":"
         )
     }
 
@@ -124,25 +233,29 @@ class MainWindow {
 
         this.gui.add("GroupBox", "w320 r3 vOptions", "Options")
         this.gui.add("Checkbox", "xm+8 yp+16 vAlwaysOnTop checked", "Always on top")
-            .OnEvent("Click", ObjBindMethod(this, "onOptionAlwaysOnTopChanged"))
+            .OnEvent("Click", ObjBindMethod(this, "OnOptionAlwaysOnTopChanged"))
         this.gui.add("Text", "xm+8 y+m", "Update when Ctrl key is")
         this.gui.add("Radio", "yp vUpdateWhenCtrlUp checked", "up")
-            .OnEvent("Click", ObjBindMethod(this, "onOptionUpdateChange"))
+            .OnEvent("Click", ObjBindMethod(this, "OnOptionUpdateChange"))
         this.gui.add("Radio", "yp vUpdateWhenCtrlDown", "down")
-            .OnEvent("Click", ObjBindMethod(this, "onOptionUpdateChange"))
+            .OnEvent("Click", ObjBindMethod(this, "OnOptionUpdateChange"))
         this.gui.add("Text", "xm+8 y+m", "Get info of")
         this.gui.add("Radio", "yp vGetActive checked", "Active window")
+            .OnEvent("Click", ObjBindMethod(this, "OnOptionTargetChange"))
         this.gui.add("Radio", "yp vGetCursor", "Window on cursor")
+            .OnEvent("Click", ObjBindMethod(this, "OnOptionTargetChange"))
+        ; Update label once
+        this.OnOptionTargetChange()
 
         this.statusBar := this.gui.add("StatusBar",, this.textList["NotFrozen"])
 
         this.gui.OnEvent("size", ObjBindMethod(this, "OnResize"))
         this.gui.OnEvent("close", ObjBindMethod(this, "OnClose"))
 
-        this.OnUpdate := ObjBindMethod(this, "update")
+        this.OnUpdate := ObjBindMethod(this, "Update")
     }
 
-    setText(controlID, text) {
+    SetText(controlID, text) {
         ; Unlike using a pure GuiControl, this function causes the text of the
         ; controls to be updated only when the text has changed, preventing periodic
         ; flickering (especially on older systems).
@@ -152,115 +265,48 @@ class MainWindow {
         }
     }
 
-    update() {
-        local curCtrl
-        CoordMode("Mouse", "Screen")
-        MouseGetPos(&msX, &msY, &msWin, &msCtrl)
+    UpdateTarget() {
         if this.gui["GetCursor"].value {
-            curWin := msWin
-            curCtrl := msCtrl
-            WinExist("ahk_id " curWin)
+            MouseGetPos(,, &window, &control, 2)
+            this.window := window
+            this.control := control
         } else {
-            curWin := WinExist("A")
-            if (!curWin) {
-                return
-            }
+            this.window := WinExist("A")
             try {
-                curCtrl := ControlGetFocus()
+                this.control := ControlGetFocus()
             } catch TargetError {
-                curCtrl := false
+                this.control := 0
             }
         }
+    }
+
+    Update() {
+        this.UpdateTarget()
 
         ; Our Gui || Alt-tab
         try {
-            if (curWin = this.gui.Hwnd || WinGetClass() = "MultitaskingViewFrame") {
-                this.statusBar.setText(this.textList["Frozen"])
+            if (this.window = this.gui.Hwnd || WinGetClass() = "MultitaskingViewFrame") {
+                this.statusBar.SetText(this.textList["Frozen"])
                 return
             }
         } catch TargetError {
 
         }
 
-        this.statusBar.setText(this.textList["NotFrozen"])
-        try {
-            this.setText(
-                "Title", 
-                WinGetTitle() 
-                "`nahk_class " WinGetClass() 
-                "`nahk_exe " WinGetProcessName() 
-                "`nahk_pid " WinGetPID()
-            )
-        } catch TargetError as e {
-            this.setText("Title", "Get window info fail: " e.Message)
-        }
-        CoordMode "Mouse", "Window"
-        MouseGetPos &mrX, &mrY
-        CoordMode "Mouse", "Client"
-        MouseGetPos &mcX, &mcY
-        mClr := PixelGetColor(msX, msY)
-        mClr := SubStr(mClr, 3)
-        this.setText(
-            "MousePos", 
-            "Screen:`t" msX ", " msY "`n"
-            "Window:`t" mrX ", " mrY "`n"
-            "Client:`t" mcX ", " mcY "`n"
-            "Color:`t#" mClr
-        )
-        this.setText(
-            "CtrlLabel", 
-            (this.gui["GetCursor"].value ? this.textList["MouseCtrl"] : this.textList["FocusCtrl"]) ":"
-        )
-        if (curCtrl) {
-            try {
-                cText := "Class:`t" WinGetClass(curCtrl) "`n"
-                cText .= "Text:`t" textMangle(ControlGetText(curCtrl)) "`n"
-                ControlGetPos &cX, &cY, &cW, &cH, curCtrl
-                cText .= "`tX: " cX "`tY: " cY "`tW: " cW "`tH: " cH
-                ScreenToClientPos(curWin, &cX, &cY)
-                curCtrlHwnd := ControlGetHwnd(curCtrl)
-                WinGetClientPos(,, &cW, &cH, curCtrlHwnd)
-                cText .= "`nClient:`tX: " cX "`tY: " cY "`tW: " cW "`tH: " cH
-                this.setText("Ctrl", cText)
-            } catch TargetError as e {
-                this.setText("Ctrl", "Get control info fail: " e.Message)
-            }
-        }
-        try {
-            WinGetPos(&wX, &wY, &wW, &wH)
-            WinGetClientPos(&wcX, &wcY, &wcW, &wcH, curWin)
-            this.setText(
-                "Pos", 
-                "`tX: " wX 
-                "`tY: " wY 
-                "`tW: " wW 
-                "`tH: " wH 
-                "`nClient:`tX: " wcX "`tY: " wcY "`tW: " wcW "`tH: " wcH
-            )
-        } catch TargetError as e {
-            this.setText("Pos", "Get window position fail" e.Message)
-        }
-        sbTxt := ""
-        loop {
-            try {
-                sbTxt .= "[" A_Index "]`t" textMangle(StatusBarGetText(A_Index)) "`n"
-            } catch as e {
-                break
-            }
-        }
-        sbTxt := SubStr(sbTxt, 1, -1)
-        this.setText("SBText", sbTxt)
-        if this.gui["IsSlow"].Value {
-            DetectHiddenText(False)
-            ovVisText := WinGetText()
-            DetectHiddenText(True)
-            ovAllText := WinGetText()
+        if (this.window && this.control) {
+            this.SetText("Ctrl", GetControlInfo(this.window, this.control))
         } else {
-            ovVisText := WinGetTextFast(false)
-            ovAllText := WinGetTextFast(true)
+            this.SetText("Ctrl", "")
         }
-        this.setText("VisText", ovVisText)
-        this.setText("AllText", ovAllText)
+
+        this.statusBar.SetText(this.textList["NotFrozen"])
+
+        this.SetText("Title", GetWindowInfo(this.window))
+        this.SetText("MousePos", GetMouseInfo())
+        this.SetText("Pos", GetWindowPosInfo(this.window))
+        this.SetText("SBText", GetStatusBarText(this.window))
+        this.SetText("VisText", GetVisibleText(this.window, this.gui["IsSlow"].Value))
+        this.SetText("AllText", GetAllText(this.window, this.gui["IsSlow"].Value))
     }
 
     autoUpdate(enable) {
@@ -271,7 +317,7 @@ class MainWindow {
             SetTimer(this.OnUpdate, 100)
         } else {
             SetTimer(this.OnUpdate, 0)
-            this.statusBar.setText(this.textList["Frozen"])
+            this.statusBar.SetText(this.textList["Frozen"])
         }
         this.autoUpdateEnabled := enable
     }
